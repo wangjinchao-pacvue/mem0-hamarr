@@ -226,7 +226,7 @@ class Memory(MemoryBase):
         except Exception as e:
             logging.error(f"Error in new_memories_with_actions: {e}")
 
-        capture_event("mem0.add", self)
+        capture_event("mem0.add", self, {"version": self.version, **filters})
 
         return returned_memories
 
@@ -305,7 +305,7 @@ class Memory(MemoryBase):
         if run_id:
             filters["run_id"] = run_id
 
-        capture_event("mem0.get_all", self, {"filters": len(filters), "limit": limit})
+        capture_event("mem0.get_all", self, {"limit": limit, **filters})
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future_memories = executor.submit(self._get_all_from_vector_store, filters, limit)
@@ -398,7 +398,7 @@ class Memory(MemoryBase):
         capture_event(
             "mem0.search",
             self,
-            {"filters": len(filters), "limit": limit, "version": self.version},
+            {"limit": limit, "version": self.version, **filters},
         )
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -518,7 +518,7 @@ class Memory(MemoryBase):
                 "At least one filter is required to delete all memories. If you want to delete all memories, use the `reset()` method."
             )
 
-        capture_event("mem0.delete_all", self, {"filters": len(filters)})
+        capture_event("mem0.delete_all", self, {**filters})
         memories = self.vector_store.list(filters=filters)[0]
         for memory in memories:
             self._delete_memory(memory.id)
