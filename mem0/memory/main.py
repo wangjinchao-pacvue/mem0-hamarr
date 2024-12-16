@@ -16,7 +16,7 @@ from mem0.memory.base import MemoryBase
 from mem0.memory.setup import setup_config
 from mem0.memory.storage import SQLiteManager
 from mem0.memory.telemetry import capture_event
-from mem0.memory.utils import get_fact_retrieval_messages, parse_messages
+from mem0.memory.utils import get_delete_memory_messages, get_fact_retrieval_messages, parse_messages
 from mem0.utils.factory import EmbedderFactory, LlmFactory, VectorStoreFactory
 
 # Setup user config
@@ -178,7 +178,8 @@ class Memory(MemoryBase):
             temp_uuid_mapping[str(idx)] = item["id"]
             retrieved_old_memory[idx]["id"] = str(idx)
 
-        function_calling_prompt = get_update_memory_messages(retrieved_old_memory, new_retrieved_facts)
+        # function_calling_prompt = get_update_memory_messages(retrieved_old_memory, new_retrieved_facts)
+        function_calling_prompt = get_delete_memory_messages(retrieved_old_memory, parsed_messages)
 
         new_memories_with_actions = self.llm.generate_response(
             messages=[{"role": "user", "content": function_calling_prompt}],
