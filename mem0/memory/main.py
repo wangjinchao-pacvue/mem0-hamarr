@@ -6,7 +6,7 @@ import uuid
 import warnings
 from datetime import datetime
 from typing import Any, Dict
-
+import copy
 import pytz
 from pydantic import ValidationError
 from mem0.memory.utils import parse_vision_messages
@@ -22,6 +22,7 @@ from mem0.memory.utils import (
     remove_code_blocks,
 )
 from mem0.utils.factory import EmbedderFactory, LlmFactory, VectorStoreFactory
+from mem0.memory.procedural_memory import optimize_prompt_with_feedback
 
 # Setup user config
 setup_config()
@@ -71,6 +72,7 @@ class Memory(MemoryBase):
         metadata=None,
         filters=None,
         prompt=None,
+        memory_type='semantic',
     ):
         """
         Create a new memory.
@@ -83,7 +85,7 @@ class Memory(MemoryBase):
             metadata (dict, optional): Metadata to store with the memory. Defaults to None.
             filters (dict, optional): Filters to apply to the search. Defaults to None.
             prompt (str, optional): Prompt to use for memory deduction. Defaults to None.
-
+            memory_type (str, optional): Type of memory to create: 'semantic' or 'procedural'. Defaults to semantic.
         Returns:
             dict: A dictionary containing the result of the memory addition operation.
             result: dict of affected events with each dict has the following key:
@@ -107,40 +109,147 @@ class Memory(MemoryBase):
             filters["agent_id"] = metadata["agent_id"] = agent_id
         if run_id:
             filters["run_id"] = metadata["run_id"] = run_id
+        if memory_type:
+            filters["memory_type"] = metadata["memory_type"] = memory_type
 
         if not any(key in filters for key in ("user_id", "agent_id", "run_id")):
             raise ValueError("One of the filters: user_id, agent_id or run_id is required!")
+
+        # if memory_type is procedural and agent_id is not present, raise an error
+        if memory_type == "procedural" and "agent_id" not in filters:
+            raise ValueError("agent_id is required for procedural memory!")
 
         if isinstance(messages, str):
             messages = [{"role": "user", "content": messages}]
 
         messages = parse_vision_messages(messages)
 
+        vector_store_result = None
+        graph_result = None
+        procedural_result = None
+
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future1 = executor.submit(self._add_to_vector_store, messages, metadata, filters)
-            future2 = executor.submit(self._add_to_graph, messages, filters)
+            futures = []
 
-            concurrent.futures.wait([future1, future2])
+            # Add graph in all cases
+            graph_future = executor.submit(self._add_to_graph, messages, filters)
+            futures.append(graph_future)
 
-            vector_store_result = future1.result()
-            graph_result = future2.result()
+            # Case 1: user_id & agent_id present, memory_type=procedural
+            if (filters.get("user_id") and filters.get("agent_id") and 
+                    filters.get("memory_type") == "procedural"):
+                futures.append(executor.submit(
+                    self._add_to_vector_store, 
+                    messages, 
+                    metadata, 
+                    filters
+                ))
+                futures.append(executor.submit(
+                    self._add_to_procedural_memory,
+                    messages,
+                    metadata,
+                    filters
+                ))
+
+            # Case 2: user_id present, agent_id not present, not procedural
+            elif filters.get("user_id") and not filters.get("agent_id"):
+                futures.append(executor.submit(
+                    self._add_to_vector_store,
+                    messages,
+                    metadata,
+                    filters
+                ))
+
+            # Case 3: no user_id, agent_id present, procedural
+            elif (not filters.get("user_id") and filters.get("agent_id") and
+                    filters.get("memory_type") == "procedural"):
+                futures.append(executor.submit(
+                    self._add_to_procedural_memory,
+                    messages,
+                    metadata,
+                    filters
+                ))
+
+            # Case 4: no user_id, agent_id present, not procedural
+            elif not filters.get("user_id") and filters.get("agent_id"):
+                futures.append(executor.submit(
+                    self._add_to_vector_store,
+                    messages,
+                    metadata,
+                    filters
+                ))
+
+            concurrent.futures.wait(futures)
+
+            for future in futures:
+                result = future.result()
+                if future == graph_future:
+                    graph_result = result
+                elif isinstance(result, dict):  # Vector store result
+                    vector_store_result = result
+                elif isinstance(result, str):  # Procedural result
+                    procedural_result = result
 
         if self.api_version == "v1.1":
             return {
                 "results": vector_store_result,
                 "relations": graph_result,
+                "procedural": procedural_result
             }
         else:
             warnings.warn(
                 "The current add API output format is deprecated. "
                 "To use the latest format, set `api_version='v1.1'`. "
-                "The current format will be removed in mem0ai 1.1.0 and later versions.",
+                "The current format will be removed in mem0ai 1.1.0 and later "
+                "versions.",
                 category=DeprecationWarning,
                 stacklevel=2,
             )
             return vector_store_result
 
+    def _add_to_procedural_memory(self, messages, metadata, filters):
+        feedback = messages[-1]["content"]
+        temp = []
+        metadata["memory_type"] = "procedural"
+        filters["memory_type"] = "procedural"
+
+        if metadata["memory_type"] == "procedural" and metadata["agent_id"]:
+            if len(self.vector_store.list(filters=filters)[0]) == 0:
+                # Create initial memory with procedural type
+                memory_id = self._create_memory(
+                    data=" ",
+                    existing_embeddings=temp,
+                    metadata=metadata,
+                    memory_type="procedural"  # Explicitly set memory_type
+                )
+            existing_procedural_memory = self.vector_store.list(filters=filters)[0]
+            memory_id = existing_procedural_memory[0].id
+            memory_text = existing_procedural_memory[0].payload["data"]
+            new_prompt = optimize_prompt_with_feedback(memory_text, feedback)
+
+            # Update memory with procedural type
+            self._update_memory(
+                memory_id=memory_id,
+                data=new_prompt,
+                existing_embeddings=temp,
+                metadata=metadata,
+                memory_type="procedural"  # Explicitly set memory_type
+            )
+            return new_prompt
+        else:
+            return ""
+
     def _add_to_vector_store(self, messages, metadata, filters):
+
+        # Create a copy of metadata and preserve memory_type
+        metadata = copy.deepcopy(metadata)
+
+        # change metadata memory_type to semantic if it is procedural
+        if metadata.get("memory_type") == "procedural":
+            metadata["memory_type"] = "semantic"
+        if filters.get("memory_type") == "procedural":
+            filters["memory_type"] = "semantic"
+
         parsed_messages = parse_messages(messages)
 
         if self.custom_prompt:
@@ -159,7 +268,14 @@ class Memory(MemoryBase):
 
         try:
             response = remove_code_blocks(response)
-            new_retrieved_facts = json.loads(response)["facts"]
+            # Add error handling for malformed JSON
+            try:
+                parsed_response = json.loads(response)
+                new_retrieved_facts = parsed_response.get("facts", [])
+            except json.JSONDecodeError as e:
+                logging.error(f"Failed to parse JSON response: {e}")
+                logging.error(f"Raw response: {response}")
+                new_retrieved_facts = []
         except Exception as e:
             logging.error(f"Error in new_retrieved_facts: {e}")
             new_retrieved_facts = []
@@ -169,14 +285,17 @@ class Memory(MemoryBase):
         for new_mem in new_retrieved_facts:
             messages_embeddings = self.embedding_model.embed(new_mem)
             new_message_embeddings[new_mem] = messages_embeddings
+            # Add memory_type to filters for search
+            search_filters = {**filters, "memory_type": metadata["memory_type"]}
             existing_memories = self.vector_store.search(
                 query=messages_embeddings,
                 limit=5,
-                filters=filters,
+                filters=search_filters,
             )
             for mem in existing_memories:
                 retrieved_old_memory.append({"id": mem.id, "text": mem.payload["data"]})
         unique_data = {}
+        print("----------////////// retrieved_old_memory ----------////////// ", retrieved_old_memory)
         for item in retrieved_old_memory:
             unique_data[item['id']] = item
         retrieved_old_memory = list(unique_data.values())
@@ -195,8 +314,17 @@ class Memory(MemoryBase):
             response_format={"type": "json_object"},
         )
 
-        new_memories_with_actions = remove_code_blocks(new_memories_with_actions)
-        new_memories_with_actions = json.loads(new_memories_with_actions)
+        try:
+            new_memories_with_actions = remove_code_blocks(new_memories_with_actions)
+            try:
+                new_memories_with_actions = json.loads(new_memories_with_actions)
+            except json.JSONDecodeError as e:
+                logging.error(f"Failed to parse JSON response: {e}")
+                logging.error(f"Raw response: {new_memories_with_actions}")
+                new_memories_with_actions = {"memory": []}
+        except Exception as e:
+            logging.error(f"Error in new_memories_with_actions: {e}")
+            new_memories_with_actions = {"memory": []}
 
         returned_memories = []
         try:
@@ -204,8 +332,13 @@ class Memory(MemoryBase):
                 logging.info(resp)
                 try:
                     if resp["event"] == "ADD":
+                        # Include memory_type in metadata for new memories
+                        memory_metadata = {**metadata}  # Create new dict from metadata
                         memory_id = self._create_memory(
-                            data=resp["text"], existing_embeddings=new_message_embeddings, metadata=metadata
+                            data=resp["text"], 
+                            existing_embeddings=new_message_embeddings, 
+                            metadata=memory_metadata,
+                            memory_type=metadata["memory_type"]  # Pass memory_type separately
                         )
                         returned_memories.append(
                             {
@@ -215,11 +348,14 @@ class Memory(MemoryBase):
                             }
                         )
                     elif resp["event"] == "UPDATE":
+                        # Include memory_type in metadata for updates
+                        memory_metadata = {**metadata}  # Create new dict from metadata
                         self._update_memory(
                             memory_id=temp_uuid_mapping[resp["id"]],
                             data=resp["text"],
                             existing_embeddings=new_message_embeddings,
-                            metadata=metadata,
+                            metadata=memory_metadata,
+                            memory_type=metadata["memory_type"]  # Pass memory_type separately
                         )
                         returned_memories.append(
                             {
@@ -246,6 +382,7 @@ class Memory(MemoryBase):
             logging.error(f"Error in new_memories_with_actions: {e}")
 
         capture_event("mem0.add", self, {"version": self.api_version, "keys": list(filters.keys())})
+        print("----------////////// returned_memories ----------////////// ", returned_memories)
 
         return returned_memories
 
@@ -304,7 +441,7 @@ class Memory(MemoryBase):
 
         return result
 
-    def get_all(self, user_id=None, agent_id=None, run_id=None, limit=100):
+    def get_all(self, user_id=None, agent_id=None, run_id=None, limit=100, memory_type='semantic'):
         """
         List all memories.
 
@@ -318,29 +455,72 @@ class Memory(MemoryBase):
             filters["agent_id"] = agent_id
         if run_id:
             filters["run_id"] = run_id
+        if memory_type:
+            filters["memory_type"] = memory_type
 
         capture_event("mem0.get_all", self, {"limit": limit, "keys": list(filters.keys())})
 
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            future_memories = executor.submit(self._get_all_from_vector_store, filters, limit)
+            futures = []
+            future_memories = None
+            future_procedural_memories = None
+
+            # Add graph in all cases
             future_graph_entities = (
                 executor.submit(self.graph.get_all, filters, limit)
                 if self.api_version == "v1.1" and self.enable_graph
                 else None
             )
+            if future_graph_entities:
+                futures.append(future_graph_entities)
 
-            concurrent.futures.wait(
-                [future_memories, future_graph_entities] if future_graph_entities else [future_memories]
-            )
+            # Case 1: user_id & agent_id present, memory_type=procedural
+            if (filters.get("user_id") and filters.get("agent_id") and 
+                    filters.get("memory_type") == "procedural"):
+                future_memories = executor.submit(
+                    self._get_all_from_vector_store, filters, limit
+                )
+                future_procedural_memories = executor.submit(
+                    self._get_all_from_procedural_memory, filters
+                )
+                futures.extend([future_memories, future_procedural_memories])
 
-            all_memories = future_memories.result()
-            graph_entities = future_graph_entities.result() if future_graph_entities else None
+            # Case 2: user_id present, agent_id not present, not procedural
+            elif filters.get("user_id") and not filters.get("agent_id"):
+                future_memories = executor.submit(
+                    self._get_all_from_vector_store, filters, limit
+                )
+                futures.append(future_memories)
+
+            # Case 3: no user_id, agent_id present, procedural
+            elif (not filters.get("user_id") and filters.get("agent_id") and
+                    filters.get("memory_type") == "procedural"):
+                future_procedural_memories = executor.submit(
+                    self._get_all_from_procedural_memory, filters
+                )
+                futures.append(future_procedural_memories)
+
+            # Case 4: no user_id, agent_id present, not procedural
+            elif not filters.get("user_id") and filters.get("agent_id"):
+                future_memories = executor.submit(
+                    self._get_all_from_vector_store, filters, limit
+                )
+                futures.append(future_memories)
+
+            concurrent.futures.wait(futures)
+
+            all_memories = future_memories.result() if future_memories else None
+            graph_entities = (future_graph_entities.result() 
+                            if future_graph_entities else None)
+            procedural_memories = (future_procedural_memories.result()
+                                 if future_procedural_memories else None)
 
         if self.api_version == "v1.1":
             if self.enable_graph:
-                return {"results": all_memories, "relations": graph_entities}
+                return {"results": all_memories, "relations": graph_entities, 
+                        "procedural": procedural_memories}
             else:
-                return {"results": all_memories}
+                return {"results": all_memories, "procedural": procedural_memories}
         else:
             warnings.warn(
                 "The current get_all API output format is deprecated. "
@@ -351,8 +531,19 @@ class Memory(MemoryBase):
             )
             return all_memories
 
+    def _get_all_from_procedural_memory(self, filters):
+        return self.vector_store.list(filters=filters)[0][0].payload["data"] if self.vector_store.list(filters=filters)[0][0].payload["data"] else ""
+
     def _get_all_from_vector_store(self, filters, limit):
-        memories = self.vector_store.list(filters=filters, limit=limit)
+        filters = copy.deepcopy(filters)
+        filters["memory_type"] = "semantic"
+        memory_type = filters["memory_type"]  # Remove and store memory_type
+        print("----------////////// filters ----------////////// ", filters)
+
+        memories = self.vector_store.list(
+            filters={**filters, "memory_type": memory_type},  # Add memory_type back to filters
+            limit=limit
+        )
 
         excluded_keys = {
             "user_id",
@@ -363,6 +554,7 @@ class Memory(MemoryBase):
             "created_at",
             "updated_at",
         }
+
         all_memories = [
             {
                 **MemoryItem(
@@ -371,6 +563,7 @@ class Memory(MemoryBase):
                     hash=mem.payload.get("hash"),
                     created_at=mem.payload.get("created_at"),
                     updated_at=mem.payload.get("updated_at"),
+                    memory_type=mem.payload.get("memory_type"),  # Include memory_type in response
                 ).model_dump(exclude={"score"}),
                 **{key: mem.payload[key] for key in ["user_id", "agent_id", "run_id"] if key in mem.payload},
                 **(
@@ -380,6 +573,7 @@ class Memory(MemoryBase):
                 ),
             }
             for mem in memories[0]
+            if mem.payload.get("memory_type") != "procedural"
         ]
         return all_memories
 
@@ -446,15 +640,19 @@ class Memory(MemoryBase):
             return original_memories
 
     def _search_vector_store(self, query, filters, limit):
+        # Add semantic memory type filter
+        filters["memory_type"] = "semantic"
+        print("----------////////// filters ----------////////// ", filters)
+
         embeddings = self.embedding_model.embed(query)
         memories = self.vector_store.search(query=embeddings, limit=limit, filters=filters)
 
         excluded_keys = {
-            "user_id",
+            "user_id", 
             "agent_id",
             "run_id",
             "hash",
-            "data",
+            "data", 
             "created_at",
             "updated_at",
         }
@@ -465,7 +663,7 @@ class Memory(MemoryBase):
                     id=mem.id,
                     memory=mem.payload["data"],
                     hash=mem.payload.get("hash"),
-                    created_at=mem.payload.get("created_at"),
+                    created_at=mem.payload.get("created_at"), 
                     updated_at=mem.payload.get("updated_at"),
                     score=mem.score,
                 ).model_dump(),
@@ -510,7 +708,7 @@ class Memory(MemoryBase):
         self._delete_memory(memory_id)
         return {"message": "Memory deleted successfully!"}
 
-    def delete_all(self, user_id=None, agent_id=None, run_id=None):
+    def delete_all(self, user_id=None, agent_id=None, run_id=None, memory_type=None):
         """
         Delete all memories.
 
@@ -526,6 +724,8 @@ class Memory(MemoryBase):
             filters["agent_id"] = agent_id
         if run_id:
             filters["run_id"] = run_id
+        if memory_type:
+            filters["memory_type"] = memory_type
 
         if not filters:
             raise ValueError(
@@ -557,7 +757,7 @@ class Memory(MemoryBase):
         capture_event("mem0.history", self, {"memory_id": memory_id})
         return self.db.get_history(memory_id)
 
-    def _create_memory(self, data, existing_embeddings, metadata=None):
+    def _create_memory(self, data, existing_embeddings, metadata=None, memory_type="semantic"):
         logging.info(f"Creating memory with {data=}")
         if data in existing_embeddings:
             embeddings = existing_embeddings[data]
@@ -568,6 +768,7 @@ class Memory(MemoryBase):
         metadata["data"] = data
         metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
         metadata["created_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+        metadata["memory_type"] = memory_type  # Ensure memory_type is set
 
         self.vector_store.insert(
             vectors=[embeddings],
@@ -578,7 +779,7 @@ class Memory(MemoryBase):
         capture_event("mem0._create_memory", self, {"memory_id": memory_id})
         return memory_id
 
-    def _update_memory(self, memory_id, data, existing_embeddings, metadata=None):
+    def _update_memory(self, memory_id, data, existing_embeddings, metadata=None, memory_type="semantic"):
         logger.info(f"Updating memory with {data=}")
 
         try:
@@ -592,6 +793,7 @@ class Memory(MemoryBase):
         new_metadata["hash"] = hashlib.md5(data.encode()).hexdigest()
         new_metadata["created_at"] = existing_memory.payload.get("created_at")
         new_metadata["updated_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+        new_metadata["memory_type"] = memory_type  # Ensure memory_type is set
 
         if "user_id" in existing_memory.payload:
             new_metadata["user_id"] = existing_memory.payload["user_id"]

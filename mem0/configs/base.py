@@ -21,7 +21,7 @@ class MemoryItem(BaseModel):
     score: Optional[float] = Field(None, description="The score associated with the text data")
     created_at: Optional[str] = Field(None, description="The timestamp when the memory was created")
     updated_at: Optional[str] = Field(None, description="The timestamp when the memory was updated")
-
+    memory_type: Optional[str] = Field(None, description="The type of memory")
 
 class MemoryConfig(BaseModel):
     vector_store: VectorStoreConfig = Field(
