@@ -6,7 +6,7 @@ import uuid
 import warnings
 from datetime import datetime
 from typing import Any, Dict
-
+from mem0.memory.procedural_memory import augment_prompt_with_feedback
 import pytz
 from pydantic import ValidationError
 from mem0.memory.utils import parse_vision_messages
@@ -304,7 +304,7 @@ class Memory(MemoryBase):
 
         return result
 
-    def get_all(self, user_id=None, agent_id=None, run_id=None, limit=100):
+    def get_all(self, user_id=None, agent_id=None, run_id=None, limit=100, task_id=None):
         """
         List all memories.
 
@@ -318,6 +318,8 @@ class Memory(MemoryBase):
             filters["agent_id"] = agent_id
         if run_id:
             filters["run_id"] = run_id
+        if task_id:
+            filters["task_id"] = task_id
 
         capture_event("mem0.get_all", self, {"limit": limit, "keys": list(filters.keys())})
 
@@ -644,3 +646,111 @@ class Memory(MemoryBase):
 
     def chat(self, query):
         raise NotImplementedError("Chat function not implemented yet.")
+
+    def add_procedural_memory(self, feedback, agent_id, task_id, augmentation="single_shot", metadata=None):
+        """Add procedural memory based on feedback for a specific agent and task.
+
+        Args:
+            feedback (str): Feedback to incorporate into procedural memory
+            agent_id (str): ID of the agent
+            task_id (str): ID of the task
+            metadata (dict, optional): Additional metadata
+
+        Returns:
+            list: List containing memory id and updated prompt
+        """
+
+        if not agent_id and not task_id:
+            raise ValueError("Agent ID and Task ID are required!")
+
+        if isinstance(feedback, list):
+            feedback = feedback[0]["content"]
+
+        metadata = metadata or {}
+        metadata.update({
+            "agent_id": agent_id,
+            "task_id": task_id,
+            "memory_type": "procedural"
+        })
+
+        existing_memory = self.get_procedural_memory(agent_id=agent_id,
+                                                   task_id=task_id)
+
+        if not existing_memory:
+            _ = self._create_memory(
+                data=" ",
+                existing_embeddings={},
+                metadata=metadata
+            )
+
+        existing_memory = self.get_procedural_memory(agent_id=agent_id,
+                                                   task_id=task_id)
+        memory_text = existing_memory[0]["data"]
+        new_prompt = augment_prompt_with_feedback(base_prompt=memory_text, feedback=feedback, model=self.llm, augmentation=augmentation)
+
+        self._update_memory(
+            memory_id=existing_memory[0]["id"],
+            data=new_prompt,
+            existing_embeddings={},
+            metadata=metadata
+        )
+
+        return [{
+            "id": existing_memory[0]["id"],
+            "data": new_prompt
+        }]
+
+    def get_procedural_memory(self, agent_id, task_id):
+        """Get procedural memory for a specific agent and task.
+
+        Args:
+            agent_id (str): ID of the agent
+            task_id (str): ID of the task
+
+        Returns:
+            list: List containing memory details or empty list if not found
+        """
+        filters = {
+            "agent_id": agent_id,
+            "task_id": task_id,
+            "memory_type": "procedural"
+        }
+        memories = self.vector_store.list(filters=filters)[0]
+
+        if not memories:
+            return []
+
+        memory = memories[0]
+        return [{
+            "id": memory.id,
+            "data": memory.payload["data"],
+            "task_id": memory.payload["task_id"],
+            "agent_id": memory.payload["agent_id"],
+            "memory_type": memory.payload["memory_type"],
+            "created_at": memory.payload["created_at"],
+        }]
+
+    def clear_procedural_memory(self, agent_id, task_id):
+        """Clear procedural memory for a specific agent and task.
+
+        Args:
+            agent_id (str): ID of the agent
+            task_id (str): ID of the task
+
+        Returns:
+            dict: Message indicating success or not found
+        """
+        filters = {
+            "agent_id": agent_id,
+            "task_id": task_id,
+            "memory_type": "procedural"
+        }
+
+        memories = self.vector_store.list(filters=filters)[0]
+
+        if not memories:
+            return {"message": "No procedural memory found"}
+
+        memory_id = memories[0].id
+        self._delete_memory(memory_id)
+        return {"message": "Procedural memory deleted successfully!"}
