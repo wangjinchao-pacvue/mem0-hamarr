@@ -10,49 +10,61 @@ User Feedback:
 {feedback}
 
 Analysis Framework:
-1. Key Issues: Identify specific problems highlighted in the feedback
+1. Key Issues: Identify specific problems/recommendations highlighted in the feedback
 2. Proposed Solutions: Suggest concrete changes to address each issue
 3. Impact Assessment: Focus on high-leverage modifications that will yield the greatest improvements
 4. Implementation Priority: Recommend which changes should be made first
 
-Provide a structured analysis with actionable recommendations for prompt enhancement."""
+Provide an analysis with actionable recommendations for prompt enhancement."""
 
-SEQUENTIAL_REFINEMENT_PROMPT = """You are an expert prompt optimizer focused on iterative refinement.
-Current Prompt:
+SEQUENTIAL_REFINEMENT_PROMPT = """Enhance this prompt based on the provided feedback:
+# CURRENT PROMPT:
+```
 {prompt}
+```
 
-User Feedback:
+# USER FEEDBACK:
+```
 {feedback}
-
-Your task is to create a refined version that:
-1. Directly addresses the feedback points
-2. Preserves the core purpose and intent
-3. Makes precise, impactful improvements
-4. Maintains clarity and brevity
-
-Focus on essential changes that maximize effectiveness. Return only the optimized prompt without explanation."""
-
-SINGLE_SHOT_PROMPT = """Enhance this prompt based on the provided feedback:
-Current Prompt:
-{prompt}
-
-User Feedback:
-{feedback}
+```
 
 Please provide an improved version that:
-1. Incorporates the specific feedback points
-2. Preserves the original intent and purpose
-3. Makes targeted, meaningful improvements
-4. Maintains clarity and conciseness
+1. Incorporates the specific feedback points only
+2. Maintains clarity and conciseness
+3. Always be brief and to the point.
 
-Return only the enhanced prompt."""
+The updated prompt should incorporate feedback while preserving core details.
+Just return the updated prompt and nothing else."""
+
+SINGLE_SHOT_PROMPT = """Enhance this prompt based on the provided feedback:
+# CURRENT PROMPT:
+```
+{prompt}
+```
+
+# USER FEEDBACK:
+```
+{feedback}
+```
+
+Please provide an improved version that:
+1. Incorporates the specific feedback points only
+2. Maintains clarity and conciseness
+3. Always be brief and to the point.
+4. Update the information only when there is a conflict. If it is something additional, add it.
+
+The updated prompt should incorporate feedback while preserving core details."""
 
 IMPROVEMENT_PROMPT = """Based on this analysis, create an enhanced version of the prompt.
-Analysis:
+# ANALYSIS:
+```
 {analysis}
+```
 
-Current Prompt:
+# CURRENT PROMPT:
+```
 {current_prompt}
+```
 
 Guidelines:
 - Address the key points from the analysis
