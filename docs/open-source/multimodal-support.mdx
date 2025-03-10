@@ -182,6 +182,68 @@ await client.add([imageMessage], { userId: "alice" })
 ```
 </CodeGroup>
 
+## 3. OpenAI-Compatible Message Format
+
+You can also use the OpenAI-compatible format to combine text and images in a single message:
+
+<CodeGroup>
+```python Python
+import base64
+
+# Path to the image file
+image_path = "path/to/your/image.jpg"
+
+# Encode the image in Base64
+with open(image_path, "rb") as image_file:
+    base64_image = base64.b64encode(image_file.read()).decode("utf-8")
+
+# Create message with both text and image
+message = {
+    "role": "user",
+    "content": [
+        {
+            "type": "text",
+            "text": "What is in this image?",
+        },
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
+        },
+    ],
+}
+
+# Add the message to memory
+client.add([message], user_id="alice")
+```
+
+```typescript TypeScript
+import { Memory, Message } from "mem0ai/oss";
+
+const client = new Memory();
+
+const imagePath = "path/to/your/image.jpg";
+const base64Image = fs.readFileSync(imagePath, { encoding: 'base64' });
+
+const message: Message = {
+    role: "user",
+    content: [
+        {
+            type: "text",
+            text: "What is in this image?",
+        },
+        {
+            type: "image_url",
+            image_url: { url: `data:image/jpeg;base64,${base64Image}` },
+        },
+    ],
+}
+
+await client.add([message], { userId: "alice" })
+```
+</CodeGroup>
+
+This format allows you to combine text and images in a single message, making it easier to provide context or ask questions about specific images.
+
 By utilizing these methods, you can effectively incorporate images into user interactions, enhancing the multimodal capabilities of your Mem0 instance.
 
 <Note>
