@@ -1,19 +1,28 @@
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 
 
 class SQLiteManager:
     def __init__(self, db_path=":memory:"):
-        self.connection = sqlite3.connect(db_path, check_same_thread=False)
+        self.db_path = db_path
         self._lock = threading.Lock()
         self._migrate_history_table()
         self._create_history_table()
 
+    @contextmanager
+    def _get_connection(self):
+        conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        try:
+            yield conn
+        finally:
+            conn.close()
+
     def _migrate_history_table(self):
         with self._lock:
-            with self.connection:
-                cursor = self.connection.cursor()
+            with self._get_connection() as conn:
+                cursor = conn.cursor()
 
                 cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='history'")
                 table_exists = cursor.fetchone() is not None
@@ -68,12 +77,12 @@ class SQLiteManager:
 
                         cursor.execute("DROP TABLE old_history")
 
-                        self.connection.commit()
+                        conn.commit()
 
     def _create_history_table(self):
         with self._lock:
-            with self.connection:
-                self.connection.execute(
+            with self._get_connection() as conn:
+                conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS history (
                         id TEXT PRIMARY KEY,
@@ -100,8 +109,8 @@ class SQLiteManager:
         is_deleted=0,
     ):
         with self._lock:
-            with self.connection:
-                self.connection.execute(
+            with self._get_connection() as conn:
+                conn.execute(
                     """
                     INSERT INTO history (id, memory_id, old_memory, new_memory, event, created_at, updated_at, is_deleted)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -120,25 +129,26 @@ class SQLiteManager:
 
     def get_history(self, memory_id):
         with self._lock:
-            cursor = self.connection.execute(
-                """
-                SELECT id, memory_id, old_memory, new_memory, event, created_at, updated_at
-                FROM history
-                WHERE memory_id = ?
-                ORDER BY updated_at ASC
-            """,
-                (memory_id,),
-            )
-            rows = cursor.fetchall()
-            return [
-                {
-                    "id": row[0],
-                    "memory_id": row[1],
-                    "old_memory": row[2],
-                    "new_memory": row[3],
-                    "event": row[4],
-                    "created_at": row[5],
-                    "updated_at": row[6],
-                }
-                for row in rows
-            ]
+            with self._get_connection() as conn:
+                cursor = conn.execute(
+                    """
+                    SELECT id, memory_id, old_memory, new_memory, event, created_at, updated_at
+                    FROM history
+                    WHERE memory_id = ?
+                    ORDER BY updated_at ASC
+                """,
+                    (memory_id,),
+                )
+                rows = cursor.fetchall()
+                return [
+                    {
+                        "id": row[0],
+                        "memory_id": row[1],
+                        "old_memory": row[2],
+                        "new_memory": row[3],
+                        "event": row[4],
+                        "created_at": row[5],
+                        "updated_at": row[6],
+                    }
+                    for row in rows
+                ]

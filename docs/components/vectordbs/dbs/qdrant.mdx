@@ -24,7 +24,7 @@ m = Memory.from_config(config)
 messages = [
     {"role": "user", "content": "I'm planning to watch a movie tonight. Any recommendations?"},
     {"role": "assistant", "content": "How about a thriller movies? They can be quite engaging."},
-    {"role": "user", "content": "I’m not a big fan of thriller movies but I love sci-fi movies."},
+    {"role": "user", "content": "I'm not a big fan of thriller movies but I love sci-fi movies."},
     {"role": "assistant", "content": "Got it! I'll avoid thriller recommendations and suggest sci-fi movies in the future."}
 ]
 m.add(messages, user_id="alice", metadata={"category": "movies"})
@@ -49,12 +49,118 @@ const memory = new Memory(config);
 const messages = [
     {"role": "user", "content": "I'm planning to watch a movie tonight. Any recommendations?"},
     {"role": "assistant", "content": "How about a thriller movies? They can be quite engaging."},
-    {"role": "user", "content": "I’m not a big fan of thriller movies but I love sci-fi movies."},
+    {"role": "user", "content": "I'm not a big fan of thriller movies but I love sci-fi movies."},
     {"role": "assistant", "content": "Got it! I'll avoid thriller recommendations and suggest sci-fi movies in the future."}
 ]
 await memory.add(messages, { userId: "alice", metadata: { category: "movies" } });
 ```
 </CodeGroup>
+
+### Memory Retrieval
+
+Qdrant provides powerful filtering capabilities that can be used to narrow down search results based on metadata or other criteria. There are two ways to create filters:
+
+1. **Simple Filters**: Using direct conditions that are combined with AND logic
+2. **Complex Boolean Logic**: Using `must`, `should`, and `must_not` clauses for more complex queries
+
+#### Simple Filters
+
+<CodeGroup>
+```python Python
+# Find memories with specific metadata
+filter = m.vector_store.create_filter()
+filter.match("category", "movies")
+filter.match("user_id", "alice")
+
+# Find memories within a date range
+filter = m.vector_store.create_filter()
+filter.range("timestamp", gte="2024-01-01", lte="2024-12-31")
+
+# Find memories that are not empty
+filter = m.vector_store.create_filter()
+filter.is_empty("content")
+
+# Find memories with specific IDs
+filter = m.vector_store.create_filter()
+filter.has_id([1, 2, 3, 5])
+
+# Search with the filter
+results = m.search("movie recommendations", filters=filter)
+```
+</CodeGroup>
+
+#### Complex Boolean Logic
+
+<CodeGroup>
+```python Python
+# Find memories that are either about movies OR TV shows, but NOT from a specific user
+filter = m.vector_store.create_filter()
+filter.must(
+    filter.should(
+        filter.match("category", "movies"),
+        filter.match("category", "tv_shows")
+    )
+).must_not(
+    filter.match("user_id", "bob")
+)
+
+# Find memories that must have a rating AND either be recent OR popular
+filter = m.vector_store.create_filter()
+filter.must(
+    filter.range("rating", gte=4.0)
+).should(
+    filter.range("timestamp", gte="2024-01-01"),
+    filter.range("views", gte=1000)
+)
+
+# Search with the filter
+results = m.search("entertainment recommendations", filters=filter)
+```
+</CodeGroup>
+
+#### Real-World Examples
+
+1. **E-commerce Product Search**:
+```python
+# Find products that are in stock, on sale, and either in electronics or gaming categories
+filter = m.vector_store.create_filter()
+filter.must(
+    filter.match("in_stock", True),
+    filter.range("discount", gte=0.2)
+).should(
+    filter.match("category", "electronics"),
+    filter.match("category", "gaming")
+)
+```
+
+2. **Content Moderation**:
+```python
+# Find content that needs review: either flagged OR from new users with high engagement
+filter = m.vector_store.create_filter()
+filter.should(
+    filter.match("flagged", True),
+    filter.must(
+        filter.range("user_age_days", lte=7),
+        filter.range("engagement_score", gte=0.8)
+    )
+)
+```
+
+3. **Time-Sensitive Recommendations**:
+```python
+# Find relevant content that is either recent OR trending
+filter = m.vector_store.create_filter()
+filter.should(
+    filter.range("timestamp", gte="2024-03-01"),
+    filter.range("trending_score", gte=0.7)
+).must_not(
+    filter.match("user_id", current_user_id)  # Don't recommend user's own content
+)
+```
+
+<Note>
+TypeScript SDK currently supports basic filtering operations only. Complex boolean filtering with `must`, `should`, and `must_not` clauses is only available in the Python SDK. We plan to add this functionality to the TypeScript SDK in a future release.
+</Note>
 
 ### Config
 

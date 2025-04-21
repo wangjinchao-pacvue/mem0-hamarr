@@ -1,22 +1,159 @@
 import logging
 import os
 import shutil
+from typing import Any, Dict, List, Optional, Union
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    HasIdCondition,
+    HasVectorCondition,
+    IsEmptyCondition,
+    IsNullCondition,
+    MatchAny,
+    MatchExcept,
     MatchValue,
     PointIdsList,
     PointStruct,
     Range,
+    ValuesCount,
     VectorParams,
+    GeoBoundingBox,
+    GeoPoint,
+    GeoRadius,
+    GeoPolygon,
+    PayloadField,
 )
 
-from mem0.vector_stores.base import VectorStoreBase
+from mem0.vector_stores.base import FilterBase, VectorStoreBase
 
 logger = logging.getLogger(__name__)
+
+
+class QdrantFilter(FilterBase):
+    """Qdrant-specific implementation of the filter builder."""
+
+    def __init__(self):
+        self._conditions = []
+        self._must = []
+        self._should = []
+        self._must_not = []
+
+    def build(self) -> Filter:
+        """Build the final filter."""
+        if self._conditions:
+            if self._must or self._should or self._must_not:
+                raise ValueError("Cannot mix conditions with must/should/must_not clauses")
+            return Filter(must=self._conditions)
+
+        return Filter(
+            must=self._must if self._must else None,
+            should=self._should if self._should else None,
+            must_not=self._must_not if self._must_not else None
+        )
+
+    def match(self, key: str, value: Any) -> "QdrantFilter":
+        """Add a match condition."""
+        self._conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
+        return self
+
+    def match_any(self, key: str, values: List[Any]) -> "QdrantFilter":
+        """Add a match any condition."""
+        self._conditions.append(FieldCondition(key=key, match=MatchAny(any=values)))
+        return self
+
+    def match_except(self, key_name: str, values: List[Any]) -> "QdrantFilter":
+        """Add a match except condition."""
+        self._conditions.append(FieldCondition(key=key_name, match=MatchExcept(**{"except": values})))
+        return self
+
+    def range(self, key_name: str, gt: Optional[float] = None, gte: Optional[float] = None,
+             lt: Optional[float] = None, lte: Optional[float] = None) -> "QdrantFilter":
+        """Add a range condition."""
+        self._conditions.append(FieldCondition(key=key_name, range=Range(gt=gt, gte=gte, lt=lt, lte=lte)))
+        return self
+
+    def has_id(self, ids: List[int]) -> "QdrantFilter":
+        """Add a has id condition."""
+        self._conditions.append(HasIdCondition(has_id=ids))
+        return self
+
+    def has_vector(self, vector_name: str) -> "QdrantFilter":
+        """Add a has vector condition."""
+        self._conditions.append(HasVectorCondition(has_vector=vector_name))
+        return self
+
+    def is_empty(self, key_name: str) -> "QdrantFilter":
+        """Add an is empty condition."""
+        self._conditions.append(IsEmptyCondition(is_empty=PayloadField(key=key_name)))
+        return self
+
+    def is_null(self, key_name: str) -> "QdrantFilter":
+        """Add an is null condition."""
+        self._conditions.append(IsNullCondition(is_null=PayloadField(key=key_name)))
+        return self
+
+    def values_count(self, key: str, gt: Optional[int] = None, gte: Optional[int] = None,
+                    lt: Optional[int] = None, lte: Optional[int] = None) -> "QdrantFilter":
+        """Add a values count condition."""
+        self._conditions.append(FieldCondition(key=key, values_count=ValuesCount(gt=gt, gte=gte, lt=lt, lte=lte)))
+        return self
+
+    def geo_bounding_box(self, key: str, bottom_right: Dict[str, float], top_left: Dict[str, float]) -> "QdrantFilter":
+        """Add a geo bounding box condition."""
+        self._conditions.append(FieldCondition(
+            key=key,
+            geo_bounding_box=GeoBoundingBox(
+                bottom_right=GeoPoint(**bottom_right),
+                top_left=GeoPoint(**top_left)
+            )
+        ))
+        return self
+
+    def geo_radius(self, key: str, center: Dict[str, float], radius: float) -> "QdrantFilter":
+        """Add a geo radius condition."""
+        self._conditions.append(FieldCondition(
+            key=key,
+            geo_radius=GeoRadius(center=GeoPoint(**center), radius=radius)
+        ))
+        return self
+
+    def geo_polygon(self, key: str, exterior: List[Dict[str, float]], interiors: Optional[List[List[Dict[str, float]]]] = None) -> "QdrantFilter":
+        """Add a geo polygon condition."""
+        self._conditions.append(FieldCondition(
+            key=key,
+            geo_polygon=GeoPolygon(
+                exterior={"points": [GeoPoint(**point) for point in exterior]},
+                interiors=[{"points": [GeoPoint(**point) for point in interior]} for interior in interiors] if interiors else None
+            )
+        ))
+        return self
+
+    def must(self, condition: Any) -> "QdrantFilter":
+        """Add a condition that must be satisfied."""
+        if isinstance(condition, QdrantFilter):
+            self._must.extend(condition._conditions)
+        else:
+            self._must.append(condition)
+        return self
+
+    def should(self, condition: Any) -> "QdrantFilter":
+        """Add a condition that should be satisfied."""
+        if isinstance(condition, QdrantFilter):
+            self._should.extend(condition._conditions)
+        else:
+            self._should.append(condition)
+        return self
+
+    def must_not(self, condition: Any) -> "QdrantFilter":
+        """Add a condition that must not be satisfied."""
+        if isinstance(condition, QdrantFilter):
+            self._must_not.extend(condition._conditions)
+        else:
+            self._must_not.append(condition)
+        return self
 
 
 class Qdrant(VectorStoreBase):
@@ -24,7 +161,7 @@ class Qdrant(VectorStoreBase):
         self,
         collection_name: str,
         embedding_model_dims: int,
-        client: QdrantClient = None,
+        client: QdrantClient | None = None,
         host: str = None,
         port: int = None,
         path: str = None,
@@ -109,20 +246,38 @@ class Qdrant(VectorStoreBase):
         ]
         self.client.upsert(collection_name=self.collection_name, points=points)
 
-    def _create_filter(self, filters: dict) -> Filter:
+    def _create_filter(self, filters: Optional[Union[Dict, FilterBase]]) -> Filter:
         """
         Create a Filter object from the provided filters.
 
         Args:
-            filters (dict): Filters to apply.
+            filters (Union[dict, FilterBase], optional): Filters to apply. Can be a dict for backward compatibility
+                or a FilterBase instance for advanced filtering.
 
         Returns:
             Filter: The created Filter object.
         """
+        if filters is None:
+            return None
+
+        if isinstance(filters, FilterBase):
+            return filters.build()
+
+        # Backward compatibility for simple dict filters
         conditions = []
         for key, value in filters.items():
-            if isinstance(value, dict) and "gte" in value and "lte" in value:
-                conditions.append(FieldCondition(key=key, range=Range(gte=value["gte"], lte=value["lte"])))
+            if isinstance(value, dict):
+                if "gte" in value and "lte" in value:
+                    conditions.append(FieldCondition(key=key, range=Range(gte=value["gte"], lte=value["lte"])))
+                elif "gt" in value or "gte" in value or "lt" in value or "lte" in value:
+                    conditions.append(FieldCondition(key=key, range=Range(
+                        gt=value.get("gt"),
+                        gte=value.get("gte"),
+                        lt=value.get("lt"),
+                        lte=value.get("lte")
+                    )))
+                else:
+                    conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
             else:
                 conditions.append(FieldCondition(key=key, match=MatchValue(value=value)))
         return Filter(must=conditions) if conditions else None
