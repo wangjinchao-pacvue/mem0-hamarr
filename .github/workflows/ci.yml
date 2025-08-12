@@ -60,6 +60,11 @@ jobs:
           pip install -e ".[test,graph,vector_stores,llms,extras]"
           pip install ruff
         if: steps.cached-hatch-dependencies.outputs.cache-hit != 'true'
+      - name: Check protobuf compatibility
+        run: |
+          python -c "import google.protobuf; print(f'Protobuf version: {google.protobuf.__version__}')"
+          python -c "import weaviate; print('Weaviate import successful')"
+        if: steps.cached-hatch-dependencies.outputs.cache-hit != 'true'
       - name: Run Linting
         run: make lint
       - name: Run tests and generate coverage report
