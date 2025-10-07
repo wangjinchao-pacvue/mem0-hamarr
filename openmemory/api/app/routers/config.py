@@ -14,6 +14,7 @@ class LLMConfig(BaseModel):
     temperature: float = Field(..., description="Temperature setting for the model")
     max_tokens: int = Field(..., description="Maximum tokens to generate")
     api_key: Optional[str] = Field(None, description="API key or 'env:API_KEY' to use environment variable")
+    openai_base_url: Optional[str] = Field(None, description="Base URL for OpenAI API (e.g., https://api.openai.com/v1 or custom proxy)")
     ollama_base_url: Optional[str] = Field(None, description="Base URL for Ollama server (e.g., http://host.docker.internal:11434)")
 
 class LLMProvider(BaseModel):
@@ -23,6 +24,7 @@ class LLMProvider(BaseModel):
 class EmbedderConfig(BaseModel):
     model: str = Field(..., description="Embedder model name")
     api_key: Optional[str] = Field(None, description="API key or 'env:API_KEY' to use environment variable")
+    openai_base_url: Optional[str] = Field(None, description="Base URL for OpenAI API (e.g., https://api.openai.com/v1 or custom proxy)")
     ollama_base_url: Optional[str] = Field(None, description="Base URL for Ollama server (e.g., http://host.docker.internal:11434)")
 
 class EmbedderProvider(BaseModel):
@@ -53,14 +55,16 @@ def get_default_configuration():
                     "model": "gpt-4o-mini",
                     "temperature": 0.1,
                     "max_tokens": 2000,
-                    "api_key": "env:OPENAI_API_KEY"
+                    "api_key": "env:OPENAI_API_KEY",
+                    "openai_base_url": "env:OPENAI_BASE_URL"
                 }
             },
             "embedder": {
                 "provider": "openai",
                 "config": {
                     "model": "text-embedding-3-small",
-                    "api_key": "env:OPENAI_API_KEY"
+                    "api_key": "env:OPENAI_API_KEY",
+                    "openai_base_url": "env:OPENAI_BASE_URL"
                 }
             }
         }

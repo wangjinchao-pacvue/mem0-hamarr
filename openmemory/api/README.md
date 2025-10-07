@@ -16,7 +16,9 @@ make build
 make env
 ```
 
-Once you run this command, edit the file `api/.env` and enter the `OPENAI_API_KEY`.
+Once you run this command, edit the file `api/.env` and configure the following:
+- `OPENAI_API_KEY`: Your OpenAI API key (required)
+- `OPENAI_BASE_URL`: Custom OpenAI API endpoint (optional, useful for proxies/relays)
 
 3. Start the services:
 ```bash

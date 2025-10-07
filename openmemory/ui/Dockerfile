@@ -24,8 +24,16 @@ COPY --from=deps /app/pnpm-lock.yaml ./pnpm-lock.yaml
 COPY . .
 
 RUN cp next.config.dev.mjs next.config.mjs
-RUN cp .env.example .env
-RUN pnpm build
+
+# Use .env if it exists, otherwise use .env.example
+RUN if [ -f .env ]; then \
+      echo "Using existing .env file"; \
+    else \
+      echo "Using .env.example as fallback" && cp .env.example .env; \
+    fi
+
+# Build with environment variables from .env file (filter out comments and empty lines)
+RUN export $(cat .env | grep -v '^#' | grep -v '^$' | xargs) && pnpm build
 
 FROM base AS runner
 WORKDIR /app
